@@ -13,9 +13,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_URLS = [
+    "https://api.binance.com/api/v3/klines",
+    "https://api.binance.us/api/v3/klines"
+]
 
-# ✅ Timeframes
 ALLOWED_INTERVALS = ["5m", "15m", "1h", "1d"]
 
 # ------------------ DATA FETCH ------------------
@@ -25,42 +27,47 @@ def get_klines(symbol: str, interval: str, limit: int = 200):
     if interval not in ALLOWED_INTERVALS:
         interval = "15m"
 
-    try:
-        res = requests.get(
-            BINANCE_KLINES_URL,
-            params={
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            },
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            },
-            timeout=10
-        )
+    last_error = None
 
-        if res.status_code != 200:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Binance API error {res.status_code}"
+    for url in BINANCE_URLS:
+        try:
+            res = requests.get(
+                url,
+                params={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "limit": limit
+                },
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10
             )
 
-        data = res.json()
+            if res.status_code != 200:
+                last_error = f"{url} → {res.status_code}"
+                continue
 
-    except Exception as e:
-        print("Binance error:", e)
-        raise HTTPException(status_code=500, detail="Binance API error")
+            data = res.json()
 
-    if not isinstance(data, list):
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+            if not isinstance(data, list):
+                last_error = f"{url} → invalid data"
+                continue
 
-    df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close", "volume",
-        "_", "_", "_", "_", "_", "_"
-    ])
+            df = pd.DataFrame(data, columns=[
+                "time", "open", "high", "low", "close", "volume",
+                "_", "_", "_", "_", "_", "_"
+            ])
 
-    df["close"] = df["close"].astype(float)
-    return df
+            df["close"] = df["close"].astype(float)
+            return df
+
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    raise HTTPException(
+        status_code=500,
+        detail=f"Binance API error (all endpoints failed)"
+    )
 
 # ------------------ INDICATORS ------------------
 
@@ -78,14 +85,14 @@ def calculate_rsi(series: pd.Series, period: int = 14):
     return rsi.fillna(50)
 
 def generate_explanation(trend, rsi, ema20, ema50, interval):
-    tf_text = "Daily timeframe" if interval == "1d" else f"{interval} timeframe"
+    tf = "Daily timeframe" if interval == "1d" else f"{interval} timeframe"
 
     if trend == "Bullish":
-        return f"{tf_text}: EMA20 ({ema20}) EMA50 ({ema50}) ke upar hai aur RSI {rsi} hai. Buyers strong hain."
+        return f"{tf}: EMA20 ({ema20}) EMA50 ({ema50}) ke upar hai aur RSI {rsi}. Buyers strong."
     elif trend == "Bearish":
-        return f"{tf_text}: EMA20 ({ema20}) EMA50 ({ema50}) ke niche hai aur RSI {rsi} hai. Sellers dominate."
+        return f"{tf}: EMA20 ({ema20}) EMA50 ({ema50}) ke niche hai aur RSI {rsi}. Sellers dominate."
     else:
-        return f"{tf_text}: EMA20 aur EMA50 ke beech price hai aur RSI {rsi} neutral hai."
+        return f"{tf}: EMA20 aur EMA50 ke beech price aur RSI {rsi} neutral."
 
 # ------------------ API ------------------
 
@@ -118,14 +125,10 @@ def analyze(symbol: str, interval: str = "15m"):
         "interval": interval,
         "trend": trend,
         "entry": price,
-
-        # 🔥 Daily vs Intraday logic
         "stoploss": round(price * (0.97 if interval == "1d" else 0.98), 2),
         "target": round(price * (1.06 if interval == "1d" else 1.03), 2),
-
         "confidence": f"RSI {rsi}",
         "explanation": generate_explanation(trend, rsi, ema20, ema50, interval),
-
         "prices": df["close"].tail(30).tolist(),
         "ema20_list": ema20_series.tail(30).tolist(),
         "ema50_list": ema50_series.tail(30).tolist(),
