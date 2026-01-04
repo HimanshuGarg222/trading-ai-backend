@@ -15,7 +15,7 @@ app.add_middleware(
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
-# ✅ 1 DAY ADDED
+# ✅ Timeframes
 ALLOWED_INTERVALS = ["5m", "15m", "1h", "1d"]
 
 # ------------------ DATA FETCH ------------------
@@ -33,13 +33,23 @@ def get_klines(symbol: str, interval: str, limit: int = 200):
                 "interval": interval,
                 "limit": limit
             },
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            },
             timeout=10
         )
-        res.raise_for_status()
-    except Exception:
-        raise HTTPException(status_code=500, detail="Binance API error")
 
-    data = res.json()
+        if res.status_code != 200:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Binance API error {res.status_code}"
+            )
+
+        data = res.json()
+
+    except Exception as e:
+        print("Binance error:", e)
+        raise HTTPException(status_code=500, detail="Binance API error")
 
     if not isinstance(data, list):
         raise HTTPException(status_code=400, detail="Invalid symbol")
@@ -68,10 +78,7 @@ def calculate_rsi(series: pd.Series, period: int = 14):
     return rsi.fillna(50)
 
 def generate_explanation(trend, rsi, ema20, ema50, interval):
-    if interval == "1d":
-        tf_text = "Daily timeframe"
-    else:
-        tf_text = f"{interval} timeframe"
+    tf_text = "Daily timeframe" if interval == "1d" else f"{interval} timeframe"
 
     if trend == "Bullish":
         return f"{tf_text}: EMA20 ({ema20}) EMA50 ({ema50}) ke upar hai aur RSI {rsi} hai. Buyers strong hain."
@@ -112,7 +119,7 @@ def analyze(symbol: str, interval: str = "15m"):
         "trend": trend,
         "entry": price,
 
-        # 🔥 DAILY vs INTRADAY SL/TP (SMART)
+        # 🔥 Daily vs Intraday logic
         "stoploss": round(price * (0.97 if interval == "1d" else 0.98), 2),
         "target": round(price * (1.06 if interval == "1d" else 1.03), 2),
 
